@@ -56,6 +56,12 @@ impl Bank {
         self.active_row = None;
     }
 
+    fn read(&mut self, col_addr: u32) -> u16 {
+        // TODO: Test(s)
+        let active_row = self.active_row.expect("Attempted to read from a column in a bank which does not currently have an active row.");
+        self.rows[active_row as usize].cols[col_addr as usize]
+    }
+
     fn write(&mut self, col_addr: u32, data: u16) {
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
@@ -95,6 +101,7 @@ impl IoBank {
 // TODO: More specific name?
 enum State {
     Idle,
+    Read { bank: IoBank, num_cycles: u32 },
     Write { bank: IoBank, num_cycles: u32 },
 }
 
@@ -146,6 +153,9 @@ impl Sdram {
             Command::Precharge => {
                 self.banks[io.bank.index()].precharge();
             }
+            Command::Read => {
+                self.state = State::Read { bank: io.bank, num_cycles: 0 };
+            }
             Command::Write => {
                 self.state = State::Write { bank: io.bank, num_cycles: 0 };
             }
@@ -154,6 +164,17 @@ impl Sdram {
 
         match &mut self.state {
             State::Idle => (), // Do nothing
+            State::Read { bank, num_cycles } => {
+                // TODO: Test(s)
+                if io.dq.is_some() {
+                    panic!("Expected no data to be provided for read cycle.");
+                }
+                io.dq = Some(self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK));
+                *num_cycles += 1;
+                if *num_cycles == BURST_LEN {
+                    self.state = State::Idle;
+                }
+            }
             State::Write { bank, num_cycles } => {
                 // TODO: Test(s)
                 let data = io.dq.expect("No data provided for write cycle.");
