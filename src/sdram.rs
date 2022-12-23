@@ -2,15 +2,20 @@
 //  8M x 16bits x 4 banks (64MBytes)
 //  Assumes 166MHz operation
 
-pub const NUM_ROW_ADDR_BITS: usize = 13;
-pub const NUM_COL_ADDR_BITS: usize = 10;
-pub const NUM_ROWS: usize = 1 << NUM_ROW_ADDR_BITS;
-pub const ROW_ADDR_MASK: usize = NUM_ROWS - 1;
-pub const NUM_COLS: usize = 1 << NUM_COL_ADDR_BITS;
-pub const COL_ADDR_MASK: usize = NUM_COLS - 1;
-pub const NUM_BANKS: usize = 4;
+pub const NUM_ELEMENT_BITS: u32 = 16;
+pub const ELEMENT_MASK: u32 = 1 << NUM_ELEMENT_BITS - 1;
+pub const NUM_ROW_ADDR_BITS: u32 = 13;
+pub const NUM_COL_ADDR_BITS: u32 = 10;
+pub const NUM_ROWS: u32 = 1 << NUM_ROW_ADDR_BITS;
+pub const ROW_ADDR_MASK: u32 = NUM_ROWS - 1;
+pub const NUM_COLS: u32 = 1 << NUM_COL_ADDR_BITS;
+pub const COL_ADDR_MASK: u32 = NUM_COLS - 1;
+pub const NUM_BANK_ADDR_BITS: u32 = 2;
+pub const NUM_BANKS: u32 = 1 << NUM_BANK_ADDR_BITS;
+pub const BANK_ADDR_MASK: u32 = NUM_BANKS - 1;
 pub const CAS_LATENCY: u32 = 3;
-pub const BURST_LEN: u32 = 8; // 128-bit effective word size
+pub const NUM_BURST_ADDR_BITS: u32 = 3;
+pub const BURST_LEN: u32 = 1 << NUM_BURST_ADDR_BITS; // 128-bit effective word size
 
 #[derive(Clone)]
 struct Row {
@@ -20,7 +25,7 @@ struct Row {
 impl Row {
     fn new() -> Row {
         Row {
-            cols: vec![0; NUM_COLS].into_boxed_slice(),
+            cols: vec![0; NUM_COLS as usize].into(),
         }
     }
 }
@@ -34,25 +39,27 @@ struct Bank {
 impl Bank {
     fn new() -> Bank {
         Bank {
-            rows: vec![Row::new(); NUM_ROWS].into_boxed_slice(),
+            rows: vec![Row::new(); NUM_ROWS as usize].into(),
             active_row: None,
         }
     }
 
-    fn active(&mut self, row: usize) {
+    fn active(&mut self, row_addr: u32) {
         if self.active_row.is_some() {
             panic!("Attempted to activate a row in a bank which already has an active row.");
         }
 
-        self.active_row = Some(row);
+        self.active_row = Some(row_addr as _);
     }
 
     fn precharge(&mut self) {
-        if self.active_row.is_none() {
-            panic!("Attempted to precharge a row in a bank which does not have an active row.");
-        }
-
         self.active_row = None;
+    }
+
+    fn write(&mut self, col_addr: u32, data: u16) {
+        // TODO: Test(s)
+        let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
+        self.rows[active_row as usize].cols[col_addr as usize] = data;
     }
 }
 
@@ -66,6 +73,7 @@ pub enum Command {
     Write,
 }
 
+#[derive(Clone, Copy)]
 pub enum IoBank {
     Bank0,
     Bank1,
@@ -82,6 +90,12 @@ impl IoBank {
             IoBank::Bank3 => 3,
         }
     }
+}
+
+// TODO: More specific name?
+enum State {
+    Idle,
+    Write { bank: IoBank, num_cycles: u32 },
 }
 
 pub struct Io {
@@ -107,28 +121,48 @@ impl Io {
     }
 }
 
+// TODO: Mode registers
 pub struct Sdram {
     banks: Box<[Bank]>,
 
-    // TODO: Mode registers
+    state: State,
 }
 
 impl Sdram {
     pub fn new() -> Sdram {
         Sdram {
-            banks: vec![Bank::new(); NUM_BANKS].into_boxed_slice(),
+            banks: vec![Bank::new(); NUM_BANKS as usize].into(),
+
+            state: State::Idle,
         }
     }
 
     pub fn clk(&mut self, io: &mut Io) {
         match io.command {
             Command::Active => {
-                self.banks[io.bank.index()].active(io.a as usize & ROW_ADDR_MASK);
+                self.banks[io.bank.index()].active(io.a as u32 & ROW_ADDR_MASK);
             }
+            Command::Nop => (), // Do nothing
             Command::Precharge => {
                 self.banks[io.bank.index()].precharge();
             }
+            Command::Write => {
+                self.state = State::Write { bank: io.bank, num_cycles: 0 };
+            }
             _ => todo!()
+        }
+
+        match &mut self.state {
+            State::Idle => (), // Do nothing
+            State::Write { bank, num_cycles } => {
+                // TODO: Test(s)
+                let data = io.dq.expect("No data provided for write cycle.");
+                self.banks[bank.index()].write((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK, data);
+                *num_cycles += 1;
+                if *num_cycles == BURST_LEN {
+                    self.state = State::Idle;
+                }
+            }
         }
     }
 }
@@ -164,18 +198,6 @@ mod tests {
         sdram.clk(&mut io);
         assert!(io.dq.is_none());
         io.command = Command::Active;
-        sdram.clk(&mut io);
-    }
-
-    #[test]
-    #[should_panic(expected = "Attempted to precharge a row in a bank which does not have an active row.")]
-    fn single_precharge() {
-        let mut sdram = Sdram::new();
-
-        // TODO: Initialization
-
-        let mut io = Io::new();
-        io.command = Command::Precharge;
         sdram.clk(&mut io);
     }
 }

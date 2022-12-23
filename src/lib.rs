@@ -1,2 +1,2 @@
-pub mod controller;
+pub mod naive_controller;
 pub mod sdram;
