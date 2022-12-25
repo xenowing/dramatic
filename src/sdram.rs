@@ -165,13 +165,15 @@ impl Sdram {
         match &mut self.state {
             State::Idle => (), // Do nothing
             State::Read { bank, num_cycles } => {
-                // TODO: Test(s)
-                if io.dq.is_some() {
-                    panic!("Expected no data to be provided for read cycle.");
+                if *num_cycles >= CAS_LATENCY {
+                    // TODO: Test(s)
+                    if io.dq.is_some() {
+                        panic!("Expected no data to be provided for read cycle.");
+                    }
+                    io.dq = Some(self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles - CAS_LATENCY) & COL_ADDR_MASK));
                 }
-                io.dq = Some(self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK));
                 *num_cycles += 1;
-                if *num_cycles == BURST_LEN {
+                if *num_cycles == CAS_LATENCY + BURST_LEN {
                     self.state = State::Idle;
                 }
             }

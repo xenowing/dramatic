@@ -64,13 +64,23 @@ impl NaiveController {
 
                 self.io.command = sdram::Command::Read;
                 self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;
+                self.sdram.clk(&mut self.io);
+                num_cycles += 1;
+                assert!(self.io.dq.is_none());
+                self.io.command = sdram::Command::Nop;
+                if sdram::CAS_LATENCY > 0 {
+                    for _ in 0..sdram::CAS_LATENCY - 1 {
+                        self.sdram.clk(&mut self.io);
+                        num_cycles += 1;
+                        assert!(self.io.dq.is_none());
+                    }
+                }
                 let mut data = 0;
                 for i in 0..sdram::BURST_LEN {
                     self.io.dq = None;
                     self.sdram.clk(&mut self.io);
-                    data |= (self.io.dq.expect("No data returned for read cycle.") as u128) << (i * sdram::NUM_ELEMENT_BITS);
                     num_cycles += 1;
-                    self.io.command = sdram::Command::Nop;
+                    data |= (self.io.dq.expect("No data returned for read cycle.") as u128) << (i * sdram::NUM_ELEMENT_BITS);
                 }
                 ret_data = Some(data);
 
