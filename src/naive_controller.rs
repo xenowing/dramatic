@@ -1,4 +1,4 @@
-use crate::sdram::{self, NUM_COL_ADDR_BITS, ROW_ADDR_MASK, COL_ADDR_MASK};
+use crate::sdram;
 
 pub enum Command {
     // TODO: Mask bits
@@ -30,14 +30,14 @@ impl NaiveController {
                 let element_addr = addr << sdram::NUM_BURST_ADDR_BITS;
 
                 self.io.command = sdram::Command::Active;
-                let row_addr = ((element_addr >> NUM_COL_ADDR_BITS) & ROW_ADDR_MASK) as _;
+                let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
                 self.io.a = row_addr;
                 self.sdram.clk(&mut self.io);
                 num_cycles += 1;
                 assert!(self.io.dq.is_none());
 
                 self.io.command = sdram::Command::Write;
-                self.io.a = (element_addr & COL_ADDR_MASK) as _;
+                self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;
                 for i in 0..sdram::BURST_LEN {
                     self.io.dq = Some((data >> (i * sdram::NUM_ELEMENT_BITS)) as _);
                     self.sdram.clk(&mut self.io);
@@ -56,14 +56,14 @@ impl NaiveController {
                 let element_addr = addr << sdram::NUM_BURST_ADDR_BITS;
 
                 self.io.command = sdram::Command::Active;
-                let row_addr = ((element_addr >> NUM_COL_ADDR_BITS) & ROW_ADDR_MASK) as _;
+                let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
                 self.io.a = row_addr;
                 self.sdram.clk(&mut self.io);
                 num_cycles += 1;
                 assert!(self.io.dq.is_none());
 
                 self.io.command = sdram::Command::Read;
-                self.io.a = (element_addr & COL_ADDR_MASK) as _;
+                self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;
                 let mut data = 0;
                 for i in 0..sdram::BURST_LEN {
                     self.io.dq = None;
