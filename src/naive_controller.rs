@@ -32,9 +32,12 @@ impl NaiveController {
                 self.io.command = sdram::Command::Active;
                 let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
                 self.io.a = row_addr;
-                self.sdram.clk(&mut self.io);
-                num_cycles += 1;
-                assert!(self.io.dq.is_none());
+                for _ in 0..sdram::T_RCD_CYCLES {
+                    self.sdram.clk(&mut self.io);
+                    num_cycles += 1;
+                    assert!(self.io.dq.is_none());
+                    self.io.command = sdram::Command::Nop;
+                }
 
                 self.io.command = sdram::Command::Write;
                 self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;
@@ -58,9 +61,12 @@ impl NaiveController {
                 self.io.command = sdram::Command::Active;
                 let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
                 self.io.a = row_addr;
-                self.sdram.clk(&mut self.io);
-                num_cycles += 1;
-                assert!(self.io.dq.is_none());
+                for _ in 0..sdram::T_RCD_CYCLES {
+                    self.sdram.clk(&mut self.io);
+                    num_cycles += 1;
+                    assert!(self.io.dq.is_none());
+                    self.io.command = sdram::Command::Nop;
+                }
 
                 self.io.command = sdram::Command::Read;
                 self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;

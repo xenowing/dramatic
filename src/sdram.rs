@@ -17,6 +17,23 @@ pub const CAS_LATENCY: u32 = 3;
 pub const NUM_BURST_ADDR_BITS: u32 = 3;
 pub const BURST_LEN: u32 = 1 << NUM_BURST_ADDR_BITS; // 128-bit effective word size
 
+const fn div_ceil(x: u32, y: u32) -> u32 {
+    (x + (y - 1)) / y
+}
+
+const CLOCK_PERIOD_NS: u32 = 6;
+
+const T_RAS_MIN_NS: u32 = 48;
+const T_RAS_MIN_CYCLES: u32 = div_ceil(T_RAS_MIN_NS, CLOCK_PERIOD_NS);
+const T_RAS_MAX_NS: u32 = 100000;
+const T_RAS_MAX_CYCLES: u32 = div_ceil(T_RAS_MAX_NS, CLOCK_PERIOD_NS);
+
+const T_RC_NS: u32 = 60;
+const T_RC_CYCLES: u32 = div_ceil(T_RC_NS, CLOCK_PERIOD_NS);
+
+const T_RCD_NS: u32 = 18;
+pub const T_RCD_CYCLES: u32 = div_ceil(T_RCD_NS, CLOCK_PERIOD_NS);
+
 #[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
@@ -31,9 +48,137 @@ impl Row {
 }
 
 #[derive(Clone)]
+struct TRasTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRasTester {
+    fn new() -> TRasTester {
+        TRasTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        // The datasheet claims a row can be active for an "indefinite period" after tRAS
+        //  min is met, but it still lists a max value, and hitting that is probably
+        //  indicative of a refresh logic error anyways, so let's still test for it.
+        // TODO: Double-check that the max value is inclusive (and adjust if not)
+        if self.cycles_since_activation > T_RAS_MAX_CYCLES {
+            // TODO: Test(s)
+            panic!("tRAS max violated.");
+        }
+    }
+
+    fn active(&mut self) {
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+
+    fn precharge(&mut self) {
+        if self.cycles_since_activation < T_RAS_MIN_CYCLES {
+            // TODO: Test(s)
+            panic!("tRAS min violated.");
+        }
+
+        self.is_active = false;
+    }
+}
+
+#[derive(Clone)]
+struct TRcTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRcTester {
+    fn new() -> TRcTester {
+        TRcTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_RC_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn active(&mut self) {
+        if self.is_active {
+            // TODO: Test(s)
+            panic!("tRC violated.");
+        }
+
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+}
+
+#[derive(Clone)]
+struct TRcdTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRcdTester {
+    fn new() -> TRcdTester {
+        TRcdTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_RCD_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn active(&mut self) {
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+
+    fn read_or_write(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        // TODO: Test(s)
+        panic!("tRCD violated.");
+    }
+}
+
+#[derive(Clone)]
 struct Bank {
     rows: Box<[Row]>,
     active_row: Option<usize>,
+
+    t_ras_tester: TRasTester,
+    t_rc_tester: TRcTester,
+    t_rcd_tester: TRcdTester,
 }
 
 impl Bank {
@@ -41,6 +186,10 @@ impl Bank {
         Bank {
             rows: vec![Row::new(); NUM_ROWS as usize].into(),
             active_row: None,
+
+            t_ras_tester: TRasTester::new(),
+            t_rc_tester: TRcTester::new(),
+            t_rcd_tester: TRcdTester::new(),
         }
     }
 
@@ -50,22 +199,42 @@ impl Bank {
         }
 
         self.active_row = Some(row_addr as _);
+
+        self.t_ras_tester.active();
+        self.t_rc_tester.active();
+        self.t_rcd_tester.active();
     }
 
     fn precharge(&mut self) {
+        if self.active_row.is_none() {
+            return;
+        }
+
         self.active_row = None;
+
+        self.t_ras_tester.precharge();
     }
 
     fn read(&mut self, col_addr: u32) -> u16 {
+        self.t_rcd_tester.read_or_write();
+
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to read from a column in a bank which does not currently have an active row.");
         self.rows[active_row as usize].cols[col_addr as usize]
     }
 
     fn write(&mut self, col_addr: u32, data: u16) {
+        self.t_rcd_tester.read_or_write();
+
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
         self.rows[active_row as usize].cols[col_addr as usize] = data;
+    }
+
+    fn clk(&mut self) {
+        self.t_ras_tester.clk();
+        self.t_rc_tester.clk();
+        self.t_rcd_tester.clk();
     }
 }
 
@@ -101,7 +270,7 @@ impl IoBank {
 // TODO: More specific name?
 enum State {
     Idle,
-    Read { bank: IoBank, num_cycles: u32 },
+    Read { bank: IoBank, data: u128, num_cycles: u32 },
     Write { bank: IoBank, num_cycles: u32 },
 }
 
@@ -145,6 +314,10 @@ impl Sdram {
     }
 
     pub fn clk(&mut self, io: &mut Io) {
+        for bank in &mut *self.banks {
+            bank.clk();
+        }
+
         match io.command {
             Command::Active => {
                 self.banks[io.bank.index()].active(io.a as u32 & ROW_ADDR_MASK);
@@ -154,7 +327,7 @@ impl Sdram {
                 self.banks[io.bank.index()].precharge();
             }
             Command::Read => {
-                self.state = State::Read { bank: io.bank, num_cycles: 0 };
+                self.state = State::Read { bank: io.bank, data: 0, num_cycles: 0 };
             }
             Command::Write => {
                 self.state = State::Write { bank: io.bank, num_cycles: 0 };
@@ -164,13 +337,19 @@ impl Sdram {
 
         match &mut self.state {
             State::Idle => (), // Do nothing
-            State::Read { bank, num_cycles } => {
+            State::Read { bank, data, num_cycles } => {
+                // Perform read immediately to test that required timing is met
+                if *num_cycles == 0 {
+                    for i in 0..BURST_LEN {
+                        *data |= (self.banks[bank.index()].read((io.a as u32).wrapping_add(i) & COL_ADDR_MASK) as u128) << (i * 16);
+                    }
+                }
                 if *num_cycles >= CAS_LATENCY {
                     // TODO: Test(s)
                     if io.dq.is_some() {
                         panic!("Expected no data to be provided for read cycle.");
                     }
-                    io.dq = Some(self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles - CAS_LATENCY) & COL_ADDR_MASK));
+                    io.dq = Some((*data >> ((*num_cycles - CAS_LATENCY) * 16)) as _);
                 }
                 *num_cycles += 1;
                 if *num_cycles == CAS_LATENCY + BURST_LEN {
@@ -202,8 +381,11 @@ mod tests {
 
         let mut io = Io::new();
         io.command = Command::Active;
-        sdram.clk(&mut io);
-        assert!(io.dq.is_none());
+        for _ in 0..T_RAS_MIN_CYCLES {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
         io.command = Command::Precharge;
         sdram.clk(&mut io);
         assert!(io.dq.is_none());
