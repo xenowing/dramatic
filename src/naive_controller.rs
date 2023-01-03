@@ -51,9 +51,12 @@ impl NaiveController {
                 // TODO: Auto-precharge instead of explicit precharge command
                 self.io.command = sdram::Command::Precharge;
                 self.io.dq = None;
-                self.sdram.clk(&mut self.io);
-                num_cycles += 1;
-                assert!(self.io.dq.is_none());
+                for _ in 0..sdram::T_RP_CYCLES {
+                    self.sdram.clk(&mut self.io);
+                    num_cycles += 1;
+                    assert!(self.io.dq.is_none());
+                    self.io.command = sdram::Command::Nop;
+                }
             }
             Command::Read { addr } => {
                 let element_addr = addr << sdram::NUM_BURST_ADDR_BITS;
@@ -93,9 +96,12 @@ impl NaiveController {
                 // TODO: Auto-precharge instead of explicit precharge command
                 self.io.command = sdram::Command::Precharge;
                 self.io.dq = None;
-                self.sdram.clk(&mut self.io);
-                num_cycles += 1;
-                assert!(self.io.dq.is_none());
+                for _ in 0..sdram::T_RP_CYCLES {
+                    self.sdram.clk(&mut self.io);
+                    num_cycles += 1;
+                    assert!(self.io.dq.is_none());
+                    self.io.command = sdram::Command::Nop;
+                }
             }
         }
 

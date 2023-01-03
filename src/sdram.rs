@@ -34,6 +34,9 @@ const T_RC_CYCLES: u32 = div_ceil(T_RC_NS, CLOCK_PERIOD_NS);
 const T_RCD_NS: u32 = 18;
 pub const T_RCD_CYCLES: u32 = div_ceil(T_RCD_NS, CLOCK_PERIOD_NS);
 
+const T_RP_NS: u32 = 18;
+pub const T_RP_CYCLES: u32 = div_ceil(T_RP_NS, CLOCK_PERIOD_NS);
+
 #[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
@@ -172,6 +175,53 @@ impl TRcdTester {
 }
 
 #[derive(Clone)]
+struct TRpTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRpTester {
+    fn new() -> TRpTester {
+        TRpTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_RP_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn precharge(&mut self) {
+        self.test();
+
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+
+    fn active_or_read_or_write(&mut self) {
+        self.test();
+    }
+
+    fn test(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        // TODO: Test(s)
+        panic!("tRP violated.");
+    }
+}
+
+#[derive(Clone)]
 struct Bank {
     rows: Box<[Row]>,
     active_row: Option<usize>,
@@ -179,6 +229,7 @@ struct Bank {
     t_ras_tester: TRasTester,
     t_rc_tester: TRcTester,
     t_rcd_tester: TRcdTester,
+    t_rp_tester: TRpTester,
 }
 
 impl Bank {
@@ -190,6 +241,7 @@ impl Bank {
             t_ras_tester: TRasTester::new(),
             t_rc_tester: TRcTester::new(),
             t_rcd_tester: TRcdTester::new(),
+            t_rp_tester: TRpTester::new(),
         }
     }
 
@@ -203,6 +255,7 @@ impl Bank {
         self.t_ras_tester.active();
         self.t_rc_tester.active();
         self.t_rcd_tester.active();
+        self.t_rp_tester.active_or_read_or_write();
     }
 
     fn precharge(&mut self) {
@@ -213,10 +266,12 @@ impl Bank {
         self.active_row = None;
 
         self.t_ras_tester.precharge();
+        self.t_rp_tester.precharge();
     }
 
     fn read(&mut self, col_addr: u32) -> u16 {
         self.t_rcd_tester.read_or_write();
+        self.t_rp_tester.active_or_read_or_write();
 
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to read from a column in a bank which does not currently have an active row.");
@@ -225,6 +280,7 @@ impl Bank {
 
     fn write(&mut self, col_addr: u32, data: u16) {
         self.t_rcd_tester.read_or_write();
+        self.t_rp_tester.active_or_read_or_write();
 
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
@@ -235,6 +291,7 @@ impl Bank {
         self.t_ras_tester.clk();
         self.t_rc_tester.clk();
         self.t_rcd_tester.clk();
+        self.t_rp_tester.clk();
     }
 }
 
