@@ -477,7 +477,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_active_precharge() {
+    fn one_active_precharge() {
         let mut sdram = Sdram::new();
 
         // TODO: Initialization
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Attempted to activate a row in a bank which already has an active row.")]
-    fn single_active_active() {
+    fn one_active_active() {
         let mut sdram = Sdram::new();
 
         // TODO: Initialization
