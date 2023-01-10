@@ -214,7 +214,6 @@ impl TRpTester {
             return;
         }
 
-        // TODO: Test(s)
         panic!("tRP violated.");
     }
 }
@@ -606,6 +605,27 @@ mod tests {
         assert!(io.dq.is_none());
         io.command = Command::Write;
         io.dq = Some(0xbeef);
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRP violated.")]
+    fn violate_t_rp() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        for _ in 0..T_RC_CYCLES {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
+        io.command = Command::Precharge;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Active;
         sdram.clk(&mut io);
     }
 }
