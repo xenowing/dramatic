@@ -168,7 +168,6 @@ impl TRcdTester {
             return;
         }
 
-        // TODO: Test(s)
         panic!("tRCD violated.");
     }
 }
@@ -576,6 +575,37 @@ mod tests {
         sdram.clk(&mut io);
         assert!(io.dq.is_none());
         io.command = Command::Active;
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRCD violated.")]
+    fn violate_t_rcd_read() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Read;
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRCD violated.")]
+    fn violate_t_rcd_write() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Write;
+        io.dq = Some(0xbeef);
         sdram.clk(&mut io);
     }
 }
