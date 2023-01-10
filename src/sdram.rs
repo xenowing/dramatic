@@ -311,6 +311,16 @@ pub enum IoBank {
 }
 
 impl IoBank {
+    pub fn from_index(index: usize) -> Option<IoBank> {
+        match index {
+            0 => Some(IoBank::Bank0),
+            1 => Some(IoBank::Bank1),
+            2 => Some(IoBank::Bank2),
+            3 => Some(IoBank::Bank3),
+            _ => None
+        }
+    }
+
     fn index(&self) -> usize {
         match *self {
             IoBank::Bank0 => 0,

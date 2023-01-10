@@ -28,6 +28,8 @@ impl NaiveController {
         match command {
             Command::Write { addr, data } => {
                 let element_addr = addr << sdram::NUM_BURST_ADDR_BITS;
+                let bank_addr = element_addr >> (sdram::NUM_ROW_ADDR_BITS + sdram::NUM_COL_ADDR_BITS) & sdram::NUM_BANK_ADDR_BITS;
+                self.io.bank = sdram::IoBank::from_index(bank_addr as _).unwrap();
 
                 self.io.command = sdram::Command::Active;
                 let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
@@ -60,6 +62,8 @@ impl NaiveController {
             }
             Command::Read { addr } => {
                 let element_addr = addr << sdram::NUM_BURST_ADDR_BITS;
+                let bank_addr = element_addr >> (sdram::NUM_ROW_ADDR_BITS + sdram::NUM_COL_ADDR_BITS) & sdram::NUM_BANK_ADDR_BITS;
+                self.io.bank = sdram::IoBank::from_index(bank_addr as _).unwrap();
 
                 self.io.command = sdram::Command::Active;
                 let row_addr = ((element_addr >> sdram::NUM_COL_ADDR_BITS) & sdram::ROW_ADDR_MASK) as _;
