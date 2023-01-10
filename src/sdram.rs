@@ -124,7 +124,6 @@ impl TRcTester {
 
     fn active(&mut self) {
         if self.is_active {
-            // TODO: Test(s)
             panic!("tRC violated.");
         }
 
@@ -557,5 +556,26 @@ mod tests {
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "tRC violated.")]
+    fn violate_t_rc() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        for _ in 0..T_RAS_MIN_CYCLES {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
+        io.command = Command::Precharge;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Active;
+        sdram.clk(&mut io);
     }
 }
