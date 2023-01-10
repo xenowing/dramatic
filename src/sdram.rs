@@ -77,7 +77,6 @@ impl TRasTester {
         // The datasheet claims a row can be active for an "indefinite period" after tRAS
         //  min is met, but it still lists a max value, and hitting that is probably
         //  indicative of a refresh logic error anyways, so let's still test for it.
-        // TODO: Double-check that the max value is inclusive (and adjust if not)
         if self.cycles_since_activation >= T_RAS_MAX_CYCLES {
             panic!("tRAS max violated.");
         }
