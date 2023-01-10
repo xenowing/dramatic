@@ -89,7 +89,6 @@ impl TRasTester {
 
     fn precharge(&mut self) {
         if self.cycles_since_activation < T_RAS_MIN_CYCLES {
-            // TODO: Test(s)
             panic!("tRAS min violated.");
         }
 
@@ -530,15 +529,29 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "tRAS max violated.")]
-    fn violates_t_ras_max() {
+    #[should_panic(expected = "tRAS min violated.")]
+    fn violate_t_ras_min() {
         let mut sdram = Sdram::new();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
-        io.bank = IoBank::Bank0;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Precharge;
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRAS max violated.")]
+    fn violate_t_ras_max() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
         for _ in 0..T_RAS_MAX_CYCLES + 1 {
             sdram.clk(&mut io);
             assert!(io.dq.is_none());
