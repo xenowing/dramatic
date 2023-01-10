@@ -37,6 +37,9 @@ pub const T_RCD_CYCLES: u32 = div_ceil(T_RCD_NS, CLOCK_PERIOD_NS);
 const T_RP_NS: u32 = 18;
 pub const T_RP_CYCLES: u32 = div_ceil(T_RP_NS, CLOCK_PERIOD_NS);
 
+const T_RRD_NS: u32 = 12;
+const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
+
 #[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
@@ -354,11 +357,49 @@ impl Io {
     }
 }
 
+struct TRrdTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRrdTester {
+    fn new() -> TRrdTester {
+        TRrdTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_RRD_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn active(&mut self) {
+        if self.is_active {
+            // TODO: Test(s)
+            panic!("tRRD violated");
+        }
+
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+}
+
 // TODO: Mode registers
 pub struct Sdram {
     banks: Box<[Bank]>,
 
     state: State,
+
+    t_rrd_tester: TRrdTester,
 }
 
 impl Sdram {
@@ -367,6 +408,8 @@ impl Sdram {
             banks: vec![Bank::new(); NUM_BANKS as usize].into(),
 
             state: State::Idle,
+
+            t_rrd_tester: TRrdTester::new(),
         }
     }
 
@@ -374,9 +417,12 @@ impl Sdram {
         for bank in &mut *self.banks {
             bank.clk();
         }
+        self.t_rrd_tester.clk();
 
         match io.command {
             Command::Active => {
+                self.t_rrd_tester.active();
+
                 self.banks[io.bank.index()].active(io.a as u32 & ROW_ADDR_MASK);
             }
             Command::Nop => (), // Do nothing
@@ -457,9 +503,31 @@ mod tests {
 
         let mut io = Io::new();
         io.command = Command::Active;
-        sdram.clk(&mut io);
-        assert!(io.dq.is_none());
+        for _ in 0..T_RRD_CYCLES {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
         io.command = Command::Active;
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    fn two_actives_separate_banks() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        io.bank = IoBank::Bank0;
+        for _ in 0..T_RRD_CYCLES {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
+        io.command = Command::Active;
+        io.bank = IoBank::Bank1;
         sdram.clk(&mut io);
     }
 }
