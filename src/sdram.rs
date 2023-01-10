@@ -78,8 +78,7 @@ impl TRasTester {
         //  min is met, but it still lists a max value, and hitting that is probably
         //  indicative of a refresh logic error anyways, so let's still test for it.
         // TODO: Double-check that the max value is inclusive (and adjust if not)
-        if self.cycles_since_activation > T_RAS_MAX_CYCLES {
-            // TODO: Test(s)
+        if self.cycles_since_activation >= T_RAS_MAX_CYCLES {
             panic!("tRAS max violated.");
         }
     }
@@ -529,5 +528,22 @@ mod tests {
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
         sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRAS max violated.")]
+    fn violates_t_ras_max() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        io.bank = IoBank::Bank0;
+        for _ in 0..T_RAS_MAX_CYCLES + 1 {
+            sdram.clk(&mut io);
+            assert!(io.dq.is_none());
+            io.command = Command::Nop;
+        }
     }
 }
