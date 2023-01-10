@@ -378,8 +378,7 @@ impl TRrdTester {
 
     fn active(&mut self) {
         if self.is_active {
-            // TODO: Test(s)
-            panic!("tRRD violated");
+            panic!("tRRD violated.");
         }
 
         self.is_active = true;
@@ -626,6 +625,23 @@ mod tests {
         sdram.clk(&mut io);
         assert!(io.dq.is_none());
         io.command = Command::Active;
+        sdram.clk(&mut io);
+    }
+
+    #[test]
+    #[should_panic(expected = "tRRD violated.")]
+    fn violate_t_rrd() {
+        let mut sdram = Sdram::new();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        io.bank = IoBank::Bank0;
+        sdram.clk(&mut io);
+        assert!(io.dq.is_none());
+        io.command = Command::Active;
+        io.bank = IoBank::Bank1;
         sdram.clk(&mut io);
     }
 }
