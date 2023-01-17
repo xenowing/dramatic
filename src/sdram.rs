@@ -334,7 +334,7 @@ impl IoBank {
 // TODO: More specific name?
 enum State {
     Idle,
-    Read { bank: IoBank, data: u128, num_cycles: u32 },
+    Read { bank: IoBank, num_cycles: u32 },
     Write { bank: IoBank, num_cycles: u32 },
 }
 
@@ -401,6 +401,7 @@ pub struct Sdram {
     banks: Box<[Bank]>,
 
     state: State,
+    dq_out_pipeline: Box<[Option<u16>]>,
 
     t_rrd_tester: TRrdTester,
 }
@@ -411,6 +412,7 @@ impl Sdram {
             banks: vec![Bank::new(); NUM_BANKS as usize].into(),
 
             state: State::Idle,
+            dq_out_pipeline: vec![None; CAS_LATENCY as usize].into(),
 
             t_rrd_tester: TRrdTester::new(),
         }
@@ -433,7 +435,7 @@ impl Sdram {
                 self.banks[io.bank.index()].precharge();
             }
             Command::Read => {
-                self.state = State::Read { bank: io.bank, data: 0, num_cycles: 0 };
+                self.state = State::Read { bank: io.bank, num_cycles: 0 };
             }
             Command::Write => {
                 self.state = State::Write { bank: io.bank, num_cycles: 0 };
@@ -441,24 +443,16 @@ impl Sdram {
             _ => todo!()
         }
 
+        let mut next_dq_out = None;
+
         match &mut self.state {
             State::Idle => (), // Do nothing
-            State::Read { bank, data, num_cycles } => {
-                // Perform read immediately to test that required timing is met
-                if *num_cycles == 0 {
-                    for i in 0..BURST_LEN {
-                        *data |= (self.banks[bank.index()].read((io.a as u32).wrapping_add(i) & COL_ADDR_MASK) as u128) << (i * 16);
-                    }
-                }
-                if *num_cycles >= CAS_LATENCY {
-                    // TODO: Test(s)
-                    if io.dq.is_some() {
-                        panic!("Expected no data to be provided for read cycle.");
-                    }
-                    io.dq = Some((*data >> ((*num_cycles - CAS_LATENCY) * 16)) as _);
-                }
+            State::Read { bank, num_cycles } => {
+                // TODO: Technically we only need to test timings for the first read cycle, but doing them each time doesn't hurt
+                let data = self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK);
+                next_dq_out = Some(data);
                 *num_cycles += 1;
-                if *num_cycles == CAS_LATENCY + BURST_LEN {
+                if *num_cycles == BURST_LEN {
                     self.state = State::Idle;
                 }
             }
@@ -472,6 +466,17 @@ impl Sdram {
                 }
             }
         }
+
+        let last = self.dq_out_pipeline[self.dq_out_pipeline.len() - 1];
+        if last.is_some() && io.dq.is_some() {
+            // TODO: Test(s)
+            panic!("Expected no data to be provided for read cycle.");
+        }
+        io.dq = last;
+        for i in (1..self.dq_out_pipeline.len()).rev() {
+            self.dq_out_pipeline[i] = self.dq_out_pipeline[i - 1];
+        }
+        self.dq_out_pipeline[0] = next_dq_out;
     }
 }
 
