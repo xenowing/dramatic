@@ -2,6 +2,10 @@
 //  8M x 16bits x 4 banks (64MBytes)
 //  Assumes 166MHz operation
 
+extern crate vcd;
+
+use std::{fs, io};
+
 pub const NUM_ELEMENT_BITS: u32 = 16;
 pub const ELEMENT_MASK: u32 = 1 << NUM_ELEMENT_BITS - 1;
 pub const NUM_ROW_ADDR_BITS: u32 = 13;
@@ -293,6 +297,7 @@ impl Bank {
 }
 
 // TODO: Add LoadModeRegister command
+#[derive(Debug)]
 pub enum Command {
     Active,
     AutoRefresh,
@@ -396,6 +401,20 @@ impl TRrdTester {
     }
 }
 
+struct Trace {
+    w: vcd::Writer<io::BufWriter<fs::File>>,
+
+    clk_id: vcd::IdCode,
+    command_id: vcd::IdCode,
+    ldqm_id: vcd::IdCode,
+    udqm_id: vcd::IdCode,
+    bank_id: vcd::IdCode,
+    a_id: vcd::IdCode,
+    dq_id: vcd::IdCode,
+
+    time_stamp: u64,
+}
+
 // TODO: Mode registers
 pub struct Sdram {
     banks: Box<[Bank]>,
@@ -404,21 +423,117 @@ pub struct Sdram {
     dq_out_pipeline: Box<[Option<u16>]>,
 
     t_rrd_tester: TRrdTester,
+
+    trace: Option<Trace>,
+}
+
+trait Bits {
+    fn bits(&self) -> Box<[vcd::Value]>;
+}
+
+impl Bits for u16 {
+    fn bits(&self) -> Box<[vcd::Value]> {
+        let mut ret = vec![vcd::Value::X; 16];
+        for (i, value) in ret.iter_mut().enumerate() {
+            *value = match (self >> (15 - i)) & 1 {
+                0 => vcd::Value::V0,
+                1 => vcd::Value::V1,
+                _ => unreachable!()
+            };
+        }
+        ret.into()
+    }
+}
+
+impl Bits for IoBank {
+    fn bits(&self) -> Box<[vcd::Value]> {
+        let index = self.index();
+        let mut ret = vec![vcd::Value::X; 2];
+        for (i, value) in ret.iter_mut().enumerate() {
+            *value = match (index >> (1 - i)) & 1 {
+                0 => vcd::Value::V0,
+                1 => vcd::Value::V1,
+                _ => unreachable!()
+            };
+        }
+        ret.into()
+    }
 }
 
 impl Sdram {
-    pub fn new() -> Sdram {
-        Sdram {
+    pub fn new(trace_file_name_prefix: Option<&str>) -> io::Result<Sdram> {
+        Ok(Sdram {
             banks: vec![Bank::new(); NUM_BANKS as usize].into(),
 
             state: State::Idle,
             dq_out_pipeline: vec![None; CAS_LATENCY as usize].into(),
 
             t_rrd_tester: TRrdTester::new(),
-        }
+
+            trace: if let Some(prefix) = trace_file_name_prefix {
+                let path = format!("vcd/{}.vcd", prefix);
+                println!("Writing trace to {}", path);
+                let file = fs::File::create(path)?;
+                let mut w = vcd::Writer::new(io::BufWriter::new(file));
+
+                w.timescale(CLOCK_PERIOD_NS / 2, vcd::TimescaleUnit::NS)?;
+
+                w.add_module("sdram")?;
+
+                let clk_id = w.add_wire(1, "clk")?;
+                let command_id = w.add_var(vcd::VarType::String, 4 /* TODO: Verify correct width */, "command", None)?;
+                let ldqm_id = w.add_wire(1, "ldqm")?;
+                let udqm_id = w.add_wire(1, "udqm")?;
+                let bank_id = w.add_wire(2, "bank")?;
+                let a_id = w.add_wire(NUM_ROW_ADDR_BITS, "a")?;
+                let dq_id = w.add_wire(16, "dq")?;
+
+                w.upscope()?;
+                w.enddefinitions()?;
+
+                let time_stamp = 0;
+                w.timestamp(time_stamp)?;
+
+                Some(Trace {
+                    w,
+
+                    clk_id,
+                    command_id,
+                    ldqm_id,
+                    udqm_id,
+                    bank_id,
+                    a_id,
+                    dq_id,
+
+                    time_stamp,
+                })
+            } else {
+                None
+            },
+        })
     }
 
-    pub fn clk(&mut self, io: &mut Io) {
+    pub fn clk(&mut self, io: &mut Io) -> io::Result<()> {
+        if let Some(trace) = &mut self.trace {
+            trace.w.change_scalar(trace.clk_id, true)?;
+
+            trace.w.change_string(trace.command_id, &format!("{:?}", io.command))?;
+            trace.w.change_scalar(trace.ldqm_id, io.ldqm)?;
+            trace.w.change_scalar(trace.udqm_id, io.udqm)?;
+            trace.w.change_vector(trace.bank_id, &io.bank.bits())?;
+            trace.w.change_vector(trace.a_id, &io.a.bits())?;
+            trace.w.change_vector(trace.dq_id, &io.dq.map_or_else(
+                || vec![vcd::Value::Z].into(),
+                |dq| dq.bits(),
+            ))?;
+
+            trace.time_stamp += 1;
+            trace.w.timestamp(trace.time_stamp)?;
+            trace.w.change_scalar(trace.clk_id, false)?;
+            trace.time_stamp += 1;
+            trace.w.timestamp(trace.time_stamp)?;
+        }
+
         for bank in &mut *self.banks {
             bank.clk();
         }
@@ -477,6 +592,8 @@ impl Sdram {
             self.dq_out_pipeline[i] = self.dq_out_pipeline[i - 1];
         }
         self.dq_out_pipeline[0] = next_dq_out;
+
+        Ok(())
     }
 }
 
@@ -485,44 +602,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_active_precharge() {
-        let mut sdram = Sdram::new();
+    fn one_active_precharge() -> io::Result<()> {
+        let mut sdram = Sdram::new(Some("Sdram__one_active_precharge"))?;
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         for _ in 0..T_RAS_MIN_CYCLES {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io)?;
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io)?;
         assert!(io.dq.is_none());
+
+        Ok(())
     }
 
     #[test]
     #[should_panic(expected = "Attempted to activate a row in a bank which already has an active row.")]
     fn one_active_active() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__one_active_active")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         for _ in 0..T_RRD_CYCLES {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io).unwrap();
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
-    fn two_actives_separate_banks() {
-        let mut sdram = Sdram::new();
+    fn two_actives_separate_banks() -> io::Result<()> {
+        let mut sdram = Sdram::new(Some("Sdram__two_actives_separate_banks"))?;
 
         // TODO: Initialization
 
@@ -530,41 +649,43 @@ mod tests {
         io.command = Command::Active;
         io.bank = IoBank::Bank0;
         for _ in 0..T_RRD_CYCLES {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io)?;
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io)?;
+
+        Ok(())
     }
 
     #[test]
     #[should_panic(expected = "tRAS min violated.")]
     fn violate_t_ras_min() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_ras_min")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Precharge;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "tRAS max violated.")]
     fn violate_t_ras_max() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_ras_max")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         for _ in 0..T_RAS_MAX_CYCLES + 1 {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io).unwrap();
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
@@ -573,90 +694,90 @@ mod tests {
     #[test]
     #[should_panic(expected = "tRC violated.")]
     fn violate_t_rc() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rc")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         for _ in 0..T_RAS_MIN_CYCLES {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io).unwrap();
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "tRCD violated.")]
     fn violate_t_rcd_read() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rcd_read")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Read;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "tRCD violated.")]
     fn violate_t_rcd_write() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rcd_write")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Write;
         io.dq = Some(0xbeef);
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "tRP violated.")]
     fn violate_t_rp() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rp")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         for _ in 0..T_RC_CYCLES {
-            sdram.clk(&mut io);
+            sdram.clk(&mut io).unwrap();
             assert!(io.dq.is_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Active;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "tRRD violated.")]
     fn violate_t_rrd() {
-        let mut sdram = Sdram::new();
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rrd")).unwrap();
 
         // TODO: Initialization
 
         let mut io = Io::new();
         io.command = Command::Active;
         io.bank = IoBank::Bank0;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
         assert!(io.dq.is_none());
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
-        sdram.clk(&mut io);
+        sdram.clk(&mut io).unwrap();
     }
 }
