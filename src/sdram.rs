@@ -515,7 +515,7 @@ impl Sdram {
 
     pub fn clk(&mut self, io: &mut Io) -> io::Result<()> {
         if let Some(trace) = &mut self.trace {
-            trace.w.change_scalar(trace.clk_id, true)?;
+            trace.w.change_scalar(trace.clk_id, false)?;
 
             trace.w.change_string(trace.command_id, &format!("{:?}", io.command))?;
             trace.w.change_scalar(trace.ldqm_id, io.ldqm)?;
@@ -529,7 +529,7 @@ impl Sdram {
 
             trace.time_stamp += 1;
             trace.w.timestamp(trace.time_stamp)?;
-            trace.w.change_scalar(trace.clk_id, false)?;
+            trace.w.change_scalar(trace.clk_id, true)?;
             trace.time_stamp += 1;
             trace.w.timestamp(trace.time_stamp)?;
         }
