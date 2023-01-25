@@ -523,7 +523,7 @@ impl Sdram {
             trace.w.change_vector(trace.bank_id, &io.bank.bits())?;
             trace.w.change_vector(trace.a_id, &io.a.bits())?;
             trace.w.change_vector(trace.dq_id, &io.dq.map_or_else(
-                || vec![vcd::Value::Z].into(),
+                || vec![vcd::Value::Z; 16].into(),
                 |dq| dq.bits(),
             ))?;
 
