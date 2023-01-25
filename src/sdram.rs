@@ -44,6 +44,19 @@ pub const T_RP_CYCLES: u32 = div_ceil(T_RP_NS, CLOCK_PERIOD_NS);
 const T_RRD_NS: u32 = 12;
 const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
 
+// The datasheet actually lists this as 15ns, but I can't seem to reconcile this
+//  with the accompanying footnotes and diagrams. I believe it was actually meant
+//  to read 9ns, which is consistent with the footnote claiming that the timing
+//  budget for tRP starts 3ns for -166mhz after the first clock delay (clock period
+//  is 6ns at 166mhz, so 3+6=9) as well as all of the timing diagrams in the
+//  datasheet _and_ numbers/diagrams in datasheets for similar parts from both
+//  the same and other vendor(s). Perhaps 15ns comes from 12+3ns instead of 12-3ns,
+//  or something similar? In any case, this is possibly wrong, so if the controller
+//  has reliability issues, this may be a place to look.
+const T_WR_NS: u32 = 9;
+// TODO: For auto-precharge, make sure this is always at least 1
+pub const T_WR_CYCLES: u32 = div_ceil(T_WR_NS, CLOCK_PERIOD_NS);
+
 #[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
@@ -223,6 +236,46 @@ impl TRpTester {
 }
 
 #[derive(Clone)]
+struct TWrTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TWrTester {
+    fn new() -> TWrTester {
+        TWrTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_WR_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn precharge(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        panic!("tWR violated.");
+    }
+
+    fn write(&mut self) {
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+}
+
+#[derive(Clone)]
 struct Bank {
     rows: Box<[Row]>,
     active_row: Option<usize>,
@@ -231,6 +284,7 @@ struct Bank {
     t_rc_tester: TRcTester,
     t_rcd_tester: TRcdTester,
     t_rp_tester: TRpTester,
+    t_wr_tester: TWrTester,
 }
 
 impl Bank {
@@ -243,6 +297,7 @@ impl Bank {
             t_rc_tester: TRcTester::new(),
             t_rcd_tester: TRcdTester::new(),
             t_rp_tester: TRpTester::new(),
+            t_wr_tester: TWrTester::new(),
         }
     }
 
@@ -268,6 +323,7 @@ impl Bank {
 
         self.t_ras_tester.precharge();
         self.t_rp_tester.precharge();
+        self.t_wr_tester.precharge();
     }
 
     fn read(&mut self, col_addr: u32) -> u16 {
@@ -282,6 +338,7 @@ impl Bank {
     fn write(&mut self, col_addr: u32, data: u16) {
         self.t_rcd_tester.read_or_write();
         self.t_rp_tester.active_or_read_or_write();
+        self.t_wr_tester.write();
 
         // TODO: Test(s)
         let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
@@ -293,6 +350,7 @@ impl Bank {
         self.t_rc_tester.clk();
         self.t_rcd_tester.clk();
         self.t_rp_tester.clk();
+        self.t_wr_tester.clk();
     }
 }
 
@@ -774,6 +832,31 @@ mod tests {
         sdram.clk(&mut io).unwrap();
         assert!(io.dq().is_none());
         io.command = Command::Active;
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tWR violated.")]
+    fn violate_t_wr() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_wr")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::Active;
+        for _ in 0..T_RCD_CYCLES {
+            sdram.clk(&mut io).unwrap();
+            assert!(io.dq().is_none());
+            io.command = Command::Nop;
+        }
+        io.command = Command::Write;
+        for _ in 0..BURST_LEN {
+            io.dq_in = Some(0xbabe);
+            sdram.clk(&mut io).unwrap();
+            io.command = Command::Nop;
+        }
+        io.command = Command::Precharge;
+        io.dq_in = None;
         sdram.clk(&mut io).unwrap();
     }
 

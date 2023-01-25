@@ -51,9 +51,14 @@ impl NaiveController {
                     self.io.command = sdram::Command::Nop;
                 }
 
+                self.io.dq_in = None;
+                for _ in 0..sdram::T_WR_CYCLES - 1 {
+                    self.sdram.clk(&mut self.io)?;
+                    num_cycles += 1;
+                }
+
                 // TODO: Auto-precharge instead of explicit precharge command
                 self.io.command = sdram::Command::Precharge;
-                self.io.dq_in = None;
                 for _ in 0..sdram::T_RP_CYCLES {
                     self.sdram.clk(&mut self.io)?;
                     num_cycles += 1;
