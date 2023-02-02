@@ -769,6 +769,7 @@ mod tests {
         io.command = Command::Precharge;
         sdram.clk(&mut io)?;
         assert!(io.dq().is_none());
+        assert!(sdram.banks[0].active_row.is_none());
 
         Ok(())
     }
