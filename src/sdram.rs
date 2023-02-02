@@ -474,16 +474,97 @@ impl TRrdTester {
     }
 }
 
+struct ScalarSignal {
+    value: Option<bool>,
+    id: vcd::IdCode,
+}
+
+impl ScalarSignal {
+    fn new(reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<ScalarSignal> {
+        let id = w.add_wire(1, reference)?;
+        Ok(ScalarSignal {
+            value: None,
+            id,
+        })
+    }
+
+    fn update(&mut self, value: bool, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
+        if self.value.map_or(false, |x| x == value) {
+            return Ok(());
+        }
+
+        w.change_scalar(self.id, value)?;
+        self.value = Some(value);
+
+        Ok(())
+    }
+}
+
+struct VectorSignal {
+    width: u32,
+    value: Option<Box<[vcd::Value]>>,
+    id: vcd::IdCode,
+}
+
+impl VectorSignal {
+    fn new(width: u32, reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<VectorSignal> {
+        let id = w.add_wire(width, reference)?;
+        Ok(VectorSignal {
+            width,
+            value: None,
+            id,
+        })
+    }
+
+    fn update(&mut self, value: Box<[vcd::Value]>, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
+        assert_eq!(self.width, value.len() as _);
+        if self.value.as_ref().map_or(false, |x| *x == value) {
+            return Ok(());
+        }
+
+        w.change_vector(self.id, &value)?;
+        self.value = Some(value);
+
+        Ok(())
+    }
+}
+
+struct StringSignal {
+    value: Option<String>,
+    id: vcd::IdCode,
+}
+
+impl StringSignal {
+    fn new(width: u32, reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<StringSignal> {
+        let id = w.add_var(vcd::VarType::String, width, reference, None)?;
+        Ok(StringSignal {
+            value: None,
+            id,
+        })
+    }
+
+    fn update(&mut self, value: String, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
+        if self.value.as_ref().map_or(false, |x| *x == value) {
+            return Ok(());
+        }
+
+        w.change_string(self.id, &value)?;
+        self.value = Some(value);
+
+        Ok(())
+    }
+}
+
 struct Trace {
     w: vcd::Writer<io::BufWriter<fs::File>>,
 
-    clk_id: vcd::IdCode,
-    command_id: vcd::IdCode,
-    ldqm_id: vcd::IdCode,
-    udqm_id: vcd::IdCode,
-    bank_id: vcd::IdCode,
-    a_id: vcd::IdCode,
-    dq_id: vcd::IdCode,
+    clk: ScalarSignal,
+    command: StringSignal,
+    ldqm: ScalarSignal,
+    udqm: ScalarSignal,
+    bank: VectorSignal,
+    a: VectorSignal,
+    dq: VectorSignal,
 
     time_stamp: u64,
 }
@@ -553,13 +634,13 @@ impl Sdram {
 
                 w.add_module("sdram")?;
 
-                let clk_id = w.add_wire(1, "clk")?;
-                let command_id = w.add_var(vcd::VarType::String, 4 /* TODO: Verify correct width */, "command", None)?;
-                let ldqm_id = w.add_wire(1, "ldqm")?;
-                let udqm_id = w.add_wire(1, "udqm")?;
-                let bank_id = w.add_wire(2, "bank")?;
-                let a_id = w.add_wire(NUM_ROW_ADDR_BITS, "a")?;
-                let dq_id = w.add_wire(16, "dq")?;
+                let clk = ScalarSignal::new("clk", &mut w)?;
+                let command = StringSignal::new(4 /* TODO: Verify correct width */, "command", &mut w)?;
+                let ldqm = ScalarSignal::new("ldqm", &mut w)?;
+                let udqm = ScalarSignal::new("udqm", &mut w)?;
+                let bank = VectorSignal::new(2, "bank", &mut w)?;
+                let a = VectorSignal::new(NUM_ROW_ADDR_BITS, "a", &mut w)?;
+                let dq = VectorSignal::new(16, "dq", &mut w)?;
 
                 w.upscope()?;
                 w.enddefinitions()?;
@@ -570,13 +651,13 @@ impl Sdram {
                 Some(Trace {
                     w,
 
-                    clk_id,
-                    command_id,
-                    ldqm_id,
-                    udqm_id,
-                    bank_id,
-                    a_id,
-                    dq_id,
+                    clk,
+                    command,
+                    ldqm,
+                    udqm,
+                    bank,
+                    a,
+                    dq,
 
                     time_stamp,
                 })
@@ -590,21 +671,21 @@ impl Sdram {
         io.check_dq_bus_conflict();
 
         if let Some(trace) = &mut self.trace {
-            trace.w.change_scalar(trace.clk_id, false)?;
+            trace.clk.update(false, &mut trace.w)?;
 
-            trace.w.change_string(trace.command_id, &format!("{:?}", io.command))?;
-            trace.w.change_scalar(trace.ldqm_id, io.ldqm)?;
-            trace.w.change_scalar(trace.udqm_id, io.udqm)?;
-            trace.w.change_vector(trace.bank_id, &io.bank.bits())?;
-            trace.w.change_vector(trace.a_id, &io.a.bits())?;
-            trace.w.change_vector(trace.dq_id, &io.dq().map_or_else(
+            trace.command.update(format!("{:?}", io.command), &mut trace.w)?;
+            trace.ldqm.update(io.ldqm, &mut trace.w)?;
+            trace.udqm.update(io.udqm, &mut trace.w)?;
+            trace.bank.update(io.bank.bits(), &mut trace.w)?;
+            trace.a.update(io.a.bits()[16 - (NUM_ROW_ADDR_BITS as usize)..].to_vec().into(), &mut trace.w)?;
+            trace.dq.update(io.dq().map_or_else(
                 || vec![vcd::Value::Z; 16].into(),
                 |dq| dq.bits(),
-            ))?;
+            ), &mut trace.w)?;
 
             trace.time_stamp += 1;
             trace.w.timestamp(trace.time_stamp)?;
-            trace.w.change_scalar(trace.clk_id, true)?;
+            trace.clk.update(true, &mut trace.w)?;
             trace.time_stamp += 1;
             trace.w.timestamp(trace.time_stamp)?;
         }
