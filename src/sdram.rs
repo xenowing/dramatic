@@ -14,6 +14,7 @@ pub const NUM_ROWS: u32 = 1 << NUM_ROW_ADDR_BITS;
 pub const ROW_ADDR_MASK: u32 = NUM_ROWS - 1;
 pub const NUM_COLS: u32 = 1 << NUM_COL_ADDR_BITS;
 pub const COL_ADDR_MASK: u32 = NUM_COLS - 1;
+pub const A_10_MASK: u32 = 1 << 10;
 pub const NUM_BANK_ADDR_BITS: u32 = 2;
 pub const NUM_BANKS: u32 = 1 << NUM_BANK_ADDR_BITS;
 pub const BANK_ADDR_MASK: u32 = NUM_BANKS - 1;
@@ -703,7 +704,13 @@ impl Sdram {
             }
             Command::Nop => (), // Do nothing
             Command::Precharge => {
-                self.banks[io.bank.index()].precharge();
+                if (io.a & A_10_MASK as u16) == 0 {
+                    self.banks[io.bank.index()].precharge();
+                } else {
+                    for bank in &mut *self.banks {
+                        bank.precharge();
+                    }
+                }
             }
             Command::Read => {
                 self.state = State::Read { bank: io.bank, num_cycles: 0 };
@@ -809,6 +816,37 @@ mod tests {
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
         sdram.clk(&mut io)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_all_precharge_all() -> io::Result<()> {
+        let mut sdram = Sdram::new(Some("Sdram__active_all_precharge_all"))?;
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        for index in 0..NUM_BANKS {
+            io.command = Command::Active;
+            io.bank = IoBank::from_index(index as _).unwrap();
+            for _ in 0..T_RRD_CYCLES {
+                sdram.clk(&mut io)?;
+                assert!(io.dq().is_none());
+                io.command = Command::Nop;
+            }
+        }
+        for _ in 0..T_RAS_MIN_CYCLES - T_RRD_CYCLES {
+            sdram.clk(&mut io)?;
+            assert!(io.dq().is_none());
+        }
+        io.command = Command::Precharge;
+        io.a = A_10_MASK as _;
+        sdram.clk(&mut io)?;
+        assert!(io.dq().is_none());
+        for bank in &*sdram.banks {
+            assert!(bank.active_row.is_none());
+        }
 
         Ok(())
     }
