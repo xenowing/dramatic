@@ -42,9 +42,6 @@ pub const T_RCD_CYCLES: u32 = div_ceil(T_RCD_NS, CLOCK_PERIOD_NS);
 const T_RP_NS: u32 = 18;
 pub const T_RP_CYCLES: u32 = div_ceil(T_RP_NS, CLOCK_PERIOD_NS);
 
-const T_RRD_NS: u32 = 12;
-const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
-
 // The datasheet actually lists this as 15ns, but I can't seem to reconcile this
 //  with the accompanying footnotes and diagrams. I believe it was actually meant
 //  to read 9ns, which is consistent with the footnote claiming that the timing
@@ -57,6 +54,9 @@ const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
 const T_WR_NS: u32 = 9;
 // TODO: For auto-precharge, make sure this is always at least 1
 pub const T_WR_CYCLES: u32 = div_ceil(T_WR_NS, CLOCK_PERIOD_NS);
+
+const T_RRD_NS: u32 = 12;
+const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
 
 #[derive(Clone)]
 struct Row {
