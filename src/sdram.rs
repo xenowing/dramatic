@@ -58,6 +58,9 @@ pub const T_WR_CYCLES: u32 = div_ceil(T_WR_NS, CLOCK_PERIOD_NS);
 const T_RRD_NS: u32 = 12;
 const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
 
+const T_RFC_NS: u32 = 80;
+const T_RFC_CYCLES: u32 = div_ceil(T_RFC_NS, CLOCK_PERIOD_NS);
+
 #[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
@@ -315,6 +318,15 @@ impl Bank {
         self.t_rp_tester.active_or_read_or_write();
     }
 
+    fn auto_refresh(&self, _row_addr: u32) {
+        if self.active_row.is_some() {
+            // TODO: Test(s)
+            panic!("Attempted to auto refresh a row in a bank which has an active row.");
+        }
+
+        // TODO: Actually refresh row
+    }
+
     fn precharge(&mut self) {
         if self.active_row.is_none() {
             return;
@@ -475,6 +487,51 @@ impl TRrdTester {
     }
 }
 
+struct TRfcTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRfcTester {
+    fn new() -> TRfcTester {
+        TRfcTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_RFC_CYCLES {
+            self.is_active = false;
+        }
+    }
+
+    fn any_command_except_auto_refresh_and_nop(&self) {
+        self.test();
+    }
+
+    fn auto_refresh(&mut self) {
+        self.test();
+
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+
+    fn test(&self) {
+        if !self.is_active {
+            return;
+        }
+
+        panic!("tRFC violated.");
+    }
+}
+
 struct ScalarSignal {
     value: Option<bool>,
     id: vcd::IdCode,
@@ -577,7 +634,10 @@ pub struct Sdram {
     state: State,
     dq_out_pipeline: Box<[Option<u16>]>,
 
+    auto_refresh_row_addr: u32,
+
     t_rrd_tester: TRrdTester,
+    t_rfc_tester: TRfcTester,
 
     trace: Option<Trace>,
 }
@@ -623,7 +683,10 @@ impl Sdram {
             state: State::Idle,
             dq_out_pipeline: vec![None; CAS_LATENCY as usize - 1].into(),
 
+            auto_refresh_row_addr: 0,
+
             t_rrd_tester: TRrdTester::new(),
+            t_rfc_tester: TRfcTester::new(),
 
             trace: if let Some(prefix) = trace_file_name_prefix {
                 let path = format!("vcd/{}.vcd", prefix);
@@ -695,15 +758,27 @@ impl Sdram {
             bank.clk();
         }
         self.t_rrd_tester.clk();
+        self.t_rfc_tester.clk();
 
         match io.command {
             Command::Active => {
                 self.t_rrd_tester.active();
+                self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
 
                 self.banks[io.bank.index()].active(io.a as u32 & ROW_ADDR_MASK);
             }
+            Command::AutoRefresh => {
+                self.t_rfc_tester.auto_refresh();
+
+                for bank in &mut *self.banks {
+                    bank.auto_refresh(self.auto_refresh_row_addr);
+                    self.auto_refresh_row_addr = (self.auto_refresh_row_addr + 1) & ROW_ADDR_MASK;
+                }
+            }
             Command::Nop => (), // Do nothing
             Command::Precharge => {
+                self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
+
                 if (io.a & A_10_MASK as u16) == 0 {
                     self.banks[io.bank.index()].precharge();
                 } else {
@@ -713,12 +788,15 @@ impl Sdram {
                 }
             }
             Command::Read => {
+                self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
+
                 self.state = State::Read { bank: io.bank, num_cycles: 0 };
             }
             Command::Write => {
+                self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
+
                 self.state = State::Write { bank: io.bank, num_cycles: 0 };
             }
-            _ => todo!()
         }
 
         let mut next_dq_out = None;
@@ -846,6 +924,25 @@ mod tests {
         assert!(io.dq().is_none());
         for bank in &*sdram.banks {
             assert!(bank.active_row.is_none());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn two_auto_refreshes() -> io::Result<()> {
+        let mut sdram = Sdram::new(Some("Sdram__two_auto_refreshes"))?;
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        for _ in 0..2 {
+            io.command = Command::AutoRefresh;
+            for _ in 0..T_RFC_CYCLES {
+                sdram.clk(&mut io)?;
+                assert!(io.dq().is_none());
+                io.command = Command::Nop;
+            }
         }
 
         Ok(())
@@ -994,6 +1091,80 @@ mod tests {
         assert!(io.dq().is_none());
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tRFC violated.")]
+    fn violate_t_rfc_active() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rfc_active")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        sdram.clk(&mut io).unwrap();
+        assert!(io.dq().is_none());
+        io.command = Command::Active;
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tRFC violated.")]
+    fn violate_t_rfc_auto_refresh() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rfc_auto_refresh")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        sdram.clk(&mut io).unwrap();
+        assert!(io.dq().is_none());
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tRFC violated.")]
+    fn violate_t_rfc_precharge() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rfc_precharge")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        sdram.clk(&mut io).unwrap();
+        assert!(io.dq().is_none());
+        io.command = Command::Precharge;
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tRFC violated.")]
+    fn violate_t_rfc_read() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rfc_read")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        sdram.clk(&mut io).unwrap();
+        assert!(io.dq().is_none());
+        io.command = Command::Read;
+        sdram.clk(&mut io).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "tRFC violated.")]
+    fn violate_t_rfc_write() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_rfc_write")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        sdram.clk(&mut io).unwrap();
+        assert!(io.dq().is_none());
+        io.command = Command::Write;
         sdram.clk(&mut io).unwrap();
     }
 }
