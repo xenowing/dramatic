@@ -181,7 +181,7 @@ impl TRcdTester {
         self.cycles_since_activation = 0;
     }
 
-    fn read_or_write(&mut self) {
+    fn read_or_write(&self) {
         if !self.is_active {
             return;
         }
@@ -223,11 +223,11 @@ impl TRpTester {
         self.cycles_since_activation = 0;
     }
 
-    fn active_or_read_or_write(&mut self) {
+    fn active_or_read_or_write(&self) {
         self.test();
     }
 
-    fn test(&mut self) {
+    fn test(&self) {
         if !self.is_active {
             return;
         }
@@ -262,7 +262,7 @@ impl TWrTester {
         }
     }
 
-    fn precharge(&mut self) {
+    fn precharge(&self) {
         if !self.is_active {
             return;
         }
