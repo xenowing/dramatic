@@ -28,6 +28,11 @@ const fn div_ceil(x: u32, y: u32) -> u32 {
 
 const CLOCK_PERIOD_NS: u32 = 6;
 
+// TODO: Perhaps parameterize this and/or fix test scaling problems another way
+const T_REF_MS: u32 = 1;//64;
+const T_REF_NS: u32 = T_REF_MS * 1000000;
+const T_REF_CYCLES: u32 = div_ceil(T_REF_NS, CLOCK_PERIOD_NS);
+
 const T_RAS_MIN_NS: u32 = 48;
 const T_RAS_MIN_CYCLES: u32 = div_ceil(T_RAS_MIN_NS, CLOCK_PERIOD_NS);
 const T_RAS_MAX_NS: u32 = 100000;
@@ -62,15 +67,75 @@ const T_RFC_NS: u32 = 80;
 const T_RFC_CYCLES: u32 = div_ceil(T_RFC_NS, CLOCK_PERIOD_NS);
 
 #[derive(Clone)]
+struct TRefTester {
+    is_active: bool,
+    cycles_since_activation: u32,
+}
+
+impl TRefTester {
+    fn new() -> TRefTester {
+        TRefTester {
+            is_active: false,
+            cycles_since_activation: 0,
+        }
+    }
+
+    fn clk(&mut self) {
+        if !self.is_active {
+            return;
+        }
+
+        self.cycles_since_activation += 1;
+
+        if self.cycles_since_activation >= T_REF_CYCLES {
+            panic!("tREF violated.");
+        }
+    }
+
+    fn active(&mut self) {
+        self.is_active = false;
+    }
+
+    fn auto_refresh(&mut self) {
+        self.precharge();
+    }
+
+    fn precharge(&mut self) {
+        self.is_active = true;
+        self.cycles_since_activation = 0;
+    }
+}
+
+#[derive(Clone)]
 struct Row {
     cols: Box<[u16]>,
+
+    t_ref_tester: TRefTester,
 }
 
 impl Row {
     fn new() -> Row {
         Row {
             cols: vec![0; NUM_COLS as usize].into(),
+
+            t_ref_tester: TRefTester::new(),
         }
+    }
+
+    fn active(&mut self) {
+        self.t_ref_tester.active();
+    }
+
+    fn auto_refresh(&mut self) {
+        self.t_ref_tester.auto_refresh();
+    }
+
+    fn precharge(&mut self) {
+        self.t_ref_tester.precharge();
+    }
+
+    fn clk(&mut self) {
+        self.t_ref_tester.clk();
     }
 }
 
@@ -311,6 +376,7 @@ impl Bank {
         }
 
         self.active_row = Some(row_addr as _);
+        self.rows[row_addr as usize].active();
 
         self.t_ras_tester.active();
         self.t_rc_tester.active();
@@ -318,13 +384,13 @@ impl Bank {
         self.t_rp_tester.active_or_read_or_write();
     }
 
-    fn auto_refresh(&self, _row_addr: u32) {
+    fn auto_refresh(&mut self, row_addr: u32) {
         if self.active_row.is_some() {
             // TODO: Test(s)
             panic!("Attempted to auto refresh a row in a bank which has an active row.");
         }
 
-        // TODO: Actually refresh row
+        self.rows[row_addr as usize].auto_refresh();
     }
 
     fn precharge(&mut self) {
@@ -332,6 +398,7 @@ impl Bank {
             return;
         }
 
+        self.rows[self.active_row.unwrap()].precharge();
         self.active_row = None;
 
         self.t_ras_tester.precharge();
@@ -359,6 +426,10 @@ impl Bank {
     }
 
     fn clk(&mut self) {
+        for row in &mut *self.rows {
+            row.clk();
+        }
+
         self.t_ras_tester.clk();
         self.t_rc_tester.clk();
         self.t_rcd_tester.clk();
@@ -946,6 +1017,22 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "tREF violated.")]
+    fn violate_t_ref() {
+        let mut sdram = Sdram::new(Some("Sdram__violate_t_ref")).unwrap();
+
+        // TODO: Initialization
+
+        let mut io = Io::new();
+        io.command = Command::AutoRefresh;
+        for _ in 0..T_REF_CYCLES + 1 {
+            sdram.clk(&mut io).unwrap();
+            assert!(io.dq().is_none());
+            io.command = Command::Nop;
+        }
     }
 
     #[test]
