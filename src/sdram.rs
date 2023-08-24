@@ -897,12 +897,12 @@ impl Sdram {
             )?;
             let dq = io.dq();
             trace.dq.update(
-                dq.low
+                dq.high
                     .map_or_else(|| vec![vcd::Value::Z; 8].into(), |dq| dq.bits())
                     .into_iter()
                     .cloned()
                     .chain(
-                        dq.high
+                        dq.low
                             .map_or_else(|| vec![vcd::Value::Z; 8].into(), |dq| dq.bits())
                             .into_iter()
                             .cloned(),
