@@ -47,16 +47,7 @@ pub const T_RCD_CYCLES: u32 = div_ceil(T_RCD_NS, CLOCK_PERIOD_NS);
 const T_RP_NS: u32 = 18;
 pub const T_RP_CYCLES: u32 = div_ceil(T_RP_NS, CLOCK_PERIOD_NS);
 
-// The datasheet actually lists this as 15ns, but I can't seem to reconcile this
-//  with the accompanying footnotes and diagrams. I believe it was actually meant
-//  to read 9ns, which is consistent with the footnote claiming that the timing
-//  budget for tRP starts 3ns for -166mhz after the first clock delay (clock period
-//  is 6ns at 166mhz, so 3+6=9) as well as all of the timing diagrams in the
-//  datasheet _and_ numbers/diagrams in datasheets for similar parts from both
-//  the same and other vendor(s). Perhaps 15ns comes from 12+3ns instead of 12-3ns,
-//  or something similar? In any case, this is possibly wrong, so if the controller
-//  has reliability issues, this may be a place to look.
-const T_WR_NS: u32 = 9;
+const T_WR_NS: u32 = 15;
 // TODO: For auto-precharge, make sure this is always at least 1
 pub const T_WR_CYCLES: u32 = div_ceil(T_WR_NS, CLOCK_PERIOD_NS);
 
