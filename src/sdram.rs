@@ -538,7 +538,6 @@ impl OptionalBytePair {
 
 pub struct Io {
     pub command: Command,
-    // TODO: Verify correct polarity
     pub ldqm: bool,
     pub udqm: bool,
     pub bank: IoBank,
