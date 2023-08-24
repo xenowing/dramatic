@@ -48,13 +48,14 @@ impl NaiveController {
                 self.io.command = sdram::Command::Write;
                 self.io.a = (element_addr & sdram::COL_ADDR_MASK) as _;
                 for i in 0..sdram::BURST_LEN {
-                    self.io.dq_in = Some((data >> (i * sdram::NUM_ELEMENT_BITS)) as _);
+                    self.io.dq_in =
+                        sdram::OptionalBytePair::some((data >> (i * sdram::NUM_ELEMENT_BITS)) as _);
                     self.sdram.clk(&mut self.io)?;
                     num_cycles += 1;
                     self.io.command = sdram::Command::Nop;
                 }
 
-                self.io.dq_in = None;
+                self.io.dq_in = sdram::OptionalBytePair::none();
                 for _ in 0..sdram::T_WR_CYCLES - 1 {
                     self.sdram.clk(&mut self.io)?;
                     num_cycles += 1;

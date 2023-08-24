@@ -57,6 +57,8 @@ const T_RRD_CYCLES: u32 = div_ceil(T_RRD_NS, CLOCK_PERIOD_NS);
 const T_RFC_NS: u32 = 80;
 const T_RFC_CYCLES: u32 = div_ceil(T_RFC_NS, CLOCK_PERIOD_NS);
 
+pub const T_DQZ_CYCLES: u32 = 2;
+
 #[derive(Clone)]
 struct TRefTester {
     is_active: bool,
@@ -99,7 +101,7 @@ impl TRefTester {
 
 #[derive(Clone)]
 struct Row {
-    cols: Box<[u16]>,
+    cols: Box<[OptionalBytePair]>,
 
     t_ref_tester: TRefTester,
 }
@@ -107,7 +109,7 @@ struct Row {
 impl Row {
     fn new() -> Row {
         Row {
-            cols: vec![0; NUM_COLS as usize].into(),
+            cols: vec![OptionalBytePair::none(); NUM_COLS as usize].into(),
 
             t_ref_tester: TRefTester::new(),
         }
@@ -397,7 +399,7 @@ impl Bank {
         self.t_wr_tester.precharge();
     }
 
-    fn read(&mut self, col_addr: u32) -> u16 {
+    fn read(&mut self, col_addr: u32) -> OptionalBytePair {
         self.t_rcd_tester.read_or_write();
         self.t_rp_tester.active_or_read_or_write();
 
@@ -406,7 +408,7 @@ impl Bank {
         self.rows[active_row as usize].cols[col_addr as usize]
     }
 
-    fn write(&mut self, col_addr: u32, data: u16) {
+    fn write(&mut self, col_addr: u32, data: OptionalBytePair) {
         self.t_rcd_tester.read_or_write();
         self.t_rp_tester.active_or_read_or_write();
         self.t_wr_tester.write();
@@ -415,7 +417,7 @@ impl Bank {
         let active_row = self.active_row.expect(
             "Attempted to write to a column in a bank which does not currently have an active row.",
         );
-        self.rows[active_row as usize].cols[col_addr as usize] = data;
+        self.rows[active_row as usize].cols[col_addr as usize].replace(data);
     }
 
     fn clk(&mut self) {
@@ -478,6 +480,62 @@ enum State {
     Write { bank: IoBank, num_cycles: u32 },
 }
 
+#[derive(Clone, Copy, Default)]
+struct Dqm {
+    ldqm: bool,
+    udqm: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct OptionalBytePair {
+    pub low: Option<u8>,
+    pub high: Option<u8>,
+}
+
+impl OptionalBytePair {
+    pub fn none() -> OptionalBytePair {
+        OptionalBytePair {
+            low: None,
+            high: None,
+        }
+    }
+
+    pub fn some(value: u16) -> OptionalBytePair {
+        OptionalBytePair {
+            low: Some(value as _),
+            high: Some((value >> 8) as _),
+        }
+    }
+
+    #[cfg(test)]
+    fn are_both_none(&self) -> bool {
+        self.low.is_none() && self.high.is_none()
+    }
+
+    pub fn expect(&self, msg: &str) -> u16 {
+        (self.low.expect(msg) as u16) | ((self.high.expect(msg) as u16) << 8)
+    }
+
+    fn mask(&self, dqm: Dqm) -> OptionalBytePair {
+        OptionalBytePair {
+            low: if !dqm.ldqm { self.low } else { None },
+            high: if !dqm.udqm { self.high } else { None },
+        }
+    }
+
+    fn or(&self, other: OptionalBytePair) -> OptionalBytePair {
+        OptionalBytePair {
+            low: self.low.or(other.low),
+            high: self.high.or(other.high),
+        }
+    }
+
+    fn replace(&mut self, other: OptionalBytePair) {
+        self.low = other.low.or(self.low);
+        self.high = other.high.or(self.high);
+    }
+}
+
 pub struct Io {
     pub command: Command,
     // TODO: Verify correct polarity
@@ -485,8 +543,8 @@ pub struct Io {
     pub udqm: bool,
     pub bank: IoBank,
     pub a: u16,
-    pub dq_in: Option<u16>,
-    dq_out: Option<u16>,
+    pub dq_in: OptionalBytePair,
+    dq_out: OptionalBytePair,
 }
 
 impl Io {
@@ -497,19 +555,21 @@ impl Io {
             udqm: false,
             bank: IoBank::Bank0,
             a: 0,
-            dq_in: None,
-            dq_out: None,
+            dq_in: Default::default(),
+            dq_out: Default::default(),
         }
     }
 
-    pub fn dq(&self) -> Option<u16> {
+    pub fn dq(&self) -> OptionalBytePair {
         self.check_dq_bus_conflict();
 
         self.dq_in.or(self.dq_out)
     }
 
     fn check_dq_bus_conflict(&self) {
-        if self.dq_in.is_some() && self.dq_out.is_some() {
+        if (self.dq_in.low.is_some() && self.dq_out.low.is_some())
+            || (self.dq_in.high.is_some() && self.dq_out.high.is_some())
+        {
             // TODO: Test(s)
             panic!("DQ bus conflict occurred.");
         }
@@ -702,7 +762,8 @@ pub struct Sdram {
     banks: Box<[Bank]>,
 
     state: State,
-    dq_out_pipeline: Box<[Option<u16>]>,
+    dq_out_pipeline: Box<[OptionalBytePair]>,
+    dqm_output_buffer_pipeline: Box<[Dqm]>,
 
     auto_refresh_row_addr: u32,
 
@@ -714,6 +775,20 @@ pub struct Sdram {
 
 trait Bits {
     fn bits(&self) -> Box<[vcd::Value]>;
+}
+
+impl Bits for u8 {
+    fn bits(&self) -> Box<[vcd::Value]> {
+        let mut ret = vec![vcd::Value::X; 8];
+        for (i, value) in ret.iter_mut().enumerate() {
+            *value = match (self >> (7 - i)) & 1 {
+                0 => vcd::Value::V0,
+                1 => vcd::Value::V1,
+                _ => unreachable!(),
+            };
+        }
+        ret.into()
+    }
 }
 
 impl Bits for u16 {
@@ -751,7 +826,8 @@ impl Sdram {
             banks: vec![Bank::new(); NUM_BANKS as usize].into(),
 
             state: State::Idle,
-            dq_out_pipeline: vec![None; CAS_LATENCY as usize - 1].into(),
+            dq_out_pipeline: vec![OptionalBytePair::none(); CAS_LATENCY as usize - 1].into(),
+            dqm_output_buffer_pipeline: vec![Default::default(); T_DQZ_CYCLES as usize - 1].into(),
 
             auto_refresh_row_addr: 0,
 
@@ -820,9 +896,20 @@ impl Sdram {
                     .into(),
                 &mut trace.w,
             )?;
+            let dq = io.dq();
             trace.dq.update(
-                io.dq()
-                    .map_or_else(|| vec![vcd::Value::Z; 16].into(), |dq| dq.bits()),
+                dq.low
+                    .map_or_else(|| vec![vcd::Value::Z; 8].into(), |dq| dq.bits())
+                    .into_iter()
+                    .cloned()
+                    .chain(
+                        dq.high
+                            .map_or_else(|| vec![vcd::Value::Z; 8].into(), |dq| dq.bits())
+                            .into_iter()
+                            .cloned(),
+                    )
+                    .collect::<Vec<_>>()
+                    .into(),
                 &mut trace.w,
             )?;
 
@@ -884,26 +971,47 @@ impl Sdram {
             }
         }
 
-        let mut next_dq_out = None;
+        let dqm = Dqm {
+            ldqm: io.ldqm,
+            udqm: io.udqm,
+        };
+
+        let mut next_dq_out = OptionalBytePair::none();
 
         match &mut self.state {
             State::Idle => (), // Do nothing
             State::Read { bank, num_cycles } => {
+                let delayed_dqm = self.dqm_output_buffer_pipeline.last().copied().unwrap();
                 // TODO: Technically we only need to test timings for the first read cycle, but doing them each time doesn't hurt
                 let data = self.banks[bank.index()]
                     .read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK);
-                next_dq_out = Some(data);
+                next_dq_out = data.mask(delayed_dqm);
                 *num_cycles += 1;
                 if *num_cycles == BURST_LEN {
                     self.state = State::Idle;
                 }
             }
             State::Write { bank, num_cycles } => {
-                // TODO: Test(s)
-                let data = io.dq_in.expect("No data provided for write cycle.");
                 self.banks[bank.index()].write(
                     (io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK,
-                    data,
+                    OptionalBytePair {
+                        low: if !dqm.ldqm {
+                            // TODO: Test(s)
+                            Some(io.dq_in.low.expect("No low data provided for write cycle."))
+                        } else {
+                            None
+                        },
+                        high: if !dqm.udqm {
+                            // TODO: Test(s)
+                            Some(
+                                io.dq_in
+                                    .high
+                                    .expect("No high data provided for write cycle."),
+                            )
+                        } else {
+                            None
+                        },
+                    },
                 );
                 *num_cycles += 1;
                 if *num_cycles == BURST_LEN {
@@ -912,12 +1020,17 @@ impl Sdram {
             }
         }
 
-        let last = self.dq_out_pipeline[self.dq_out_pipeline.len() - 1];
+        let last = self.dq_out_pipeline.last().copied().unwrap();
         io.dq_out = last;
         for i in (1..self.dq_out_pipeline.len()).rev() {
             self.dq_out_pipeline[i] = self.dq_out_pipeline[i - 1];
         }
         self.dq_out_pipeline[0] = next_dq_out;
+
+        for i in (1..self.dqm_output_buffer_pipeline.len()).rev() {
+            self.dqm_output_buffer_pipeline[i] = self.dqm_output_buffer_pipeline[i - 1];
+        }
+        self.dqm_output_buffer_pipeline[0] = dqm;
 
         Ok(())
     }
@@ -937,12 +1050,12 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RAS_MIN_CYCLES {
             sdram.clk(&mut io)?;
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
         sdram.clk(&mut io)?;
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         assert!(sdram.banks[0].active_row.is_none());
 
         Ok(())
@@ -961,7 +1074,7 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RRD_CYCLES {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Active;
@@ -979,7 +1092,7 @@ mod tests {
         io.bank = IoBank::Bank0;
         for _ in 0..T_RRD_CYCLES {
             sdram.clk(&mut io)?;
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Active;
@@ -1001,18 +1114,18 @@ mod tests {
             io.bank = IoBank::from_index(index as _).unwrap();
             for _ in 0..T_RRD_CYCLES {
                 sdram.clk(&mut io)?;
-                assert!(io.dq().is_none());
+                assert!(io.dq().are_both_none());
                 io.command = Command::Nop;
             }
         }
         for _ in 0..T_RAS_MIN_CYCLES - T_RRD_CYCLES {
             sdram.clk(&mut io)?;
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
         }
         io.command = Command::Precharge;
         io.a = A_10_MASK as _;
         sdram.clk(&mut io)?;
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         for bank in &*sdram.banks {
             assert!(bank.active_row.is_none());
         }
@@ -1031,7 +1144,7 @@ mod tests {
             io.command = Command::AutoRefresh;
             for _ in 0..T_RFC_CYCLES {
                 sdram.clk(&mut io)?;
-                assert!(io.dq().is_none());
+                assert!(io.dq().are_both_none());
                 io.command = Command::Nop;
             }
         }
@@ -1050,7 +1163,7 @@ mod tests {
         io.command = Command::AutoRefresh;
         for _ in 0..T_REF_CYCLES + 1 {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
     }
@@ -1065,7 +1178,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Precharge;
         sdram.clk(&mut io).unwrap();
     }
@@ -1081,7 +1194,7 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RAS_MAX_CYCLES + 1 {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
     }
@@ -1097,12 +1210,12 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RAS_MIN_CYCLES {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
     }
@@ -1117,7 +1230,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Read;
         sdram.clk(&mut io).unwrap();
     }
@@ -1132,9 +1245,9 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Write;
-        io.dq_in = Some(0xbeef);
+        io.dq_in = OptionalBytePair::some(0xbeef);
         sdram.clk(&mut io).unwrap();
     }
 
@@ -1149,12 +1262,12 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RC_CYCLES {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
     }
@@ -1170,17 +1283,17 @@ mod tests {
         io.command = Command::Active;
         for _ in 0..T_RCD_CYCLES {
             sdram.clk(&mut io).unwrap();
-            assert!(io.dq().is_none());
+            assert!(io.dq().are_both_none());
             io.command = Command::Nop;
         }
         io.command = Command::Write;
         for _ in 0..BURST_LEN {
-            io.dq_in = Some(0xbabe);
+            io.dq_in = OptionalBytePair::some(0xbabe);
             sdram.clk(&mut io).unwrap();
             io.command = Command::Nop;
         }
         io.command = Command::Precharge;
-        io.dq_in = None;
+        io.dq_in = OptionalBytePair::none();
         sdram.clk(&mut io).unwrap();
     }
 
@@ -1195,7 +1308,7 @@ mod tests {
         io.command = Command::Active;
         io.bank = IoBank::Bank0;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Active;
         io.bank = IoBank::Bank1;
         sdram.clk(&mut io).unwrap();
@@ -1211,7 +1324,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::AutoRefresh;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Active;
         sdram.clk(&mut io).unwrap();
     }
@@ -1226,7 +1339,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::AutoRefresh;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         sdram.clk(&mut io).unwrap();
     }
 
@@ -1240,7 +1353,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::AutoRefresh;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Precharge;
         sdram.clk(&mut io).unwrap();
     }
@@ -1255,7 +1368,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::AutoRefresh;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Read;
         sdram.clk(&mut io).unwrap();
     }
@@ -1270,7 +1383,7 @@ mod tests {
         let mut io = Io::new();
         io.command = Command::AutoRefresh;
         sdram.clk(&mut io).unwrap();
-        assert!(io.dq().is_none());
+        assert!(io.dq().are_both_none());
         io.command = Command::Write;
         sdram.clk(&mut io).unwrap();
     }
