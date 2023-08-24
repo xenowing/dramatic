@@ -29,8 +29,8 @@ const fn div_ceil(x: u32, y: u32) -> u32 {
 const CLOCK_PERIOD_NS: u32 = 6;
 
 // TODO: Perhaps parameterize this and/or fix test scaling problems another way
-const T_REF_MS: u32 = 1;//64;
-const T_REF_NS: u32 = T_REF_MS * 1000000;
+const T_REF_US: u32 = 1; //64_000;
+const T_REF_NS: u32 = T_REF_US * 1_000;
 const T_REF_CYCLES: u32 = div_ceil(T_REF_NS, CLOCK_PERIOD_NS);
 
 const T_RAS_MIN_NS: u32 = 48;
