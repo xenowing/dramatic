@@ -421,7 +421,9 @@ impl Bank {
         self.t_wr_tester.write();
 
         // TODO: Test(s)
-        let active_row = self.active_row.expect("Attempted to write to a column in a bank which does not currently have an active row.");
+        let active_row = self.active_row.expect(
+            "Attempted to write to a column in a bank which does not currently have an active row.",
+        );
         self.rows[active_row as usize].cols[col_addr as usize] = data;
     }
 
@@ -464,7 +466,7 @@ impl IoBank {
             1 => Some(IoBank::Bank1),
             2 => Some(IoBank::Bank2),
             3 => Some(IoBank::Bank3),
-            _ => None
+            _ => None,
         }
     }
 
@@ -611,10 +613,7 @@ struct ScalarSignal {
 impl ScalarSignal {
     fn new(reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<ScalarSignal> {
         let id = w.add_wire(1, reference)?;
-        Ok(ScalarSignal {
-            value: None,
-            id,
-        })
+        Ok(ScalarSignal { value: None, id })
     }
 
     fn update(&mut self, value: bool, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
@@ -636,7 +635,11 @@ struct VectorSignal {
 }
 
 impl VectorSignal {
-    fn new(width: u32, reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<VectorSignal> {
+    fn new(
+        width: u32,
+        reference: &str,
+        w: &mut vcd::Writer<impl io::Write>,
+    ) -> io::Result<VectorSignal> {
         let id = w.add_wire(width, reference)?;
         Ok(VectorSignal {
             width,
@@ -645,7 +648,11 @@ impl VectorSignal {
         })
     }
 
-    fn update(&mut self, value: Box<[vcd::Value]>, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
+    fn update(
+        &mut self,
+        value: Box<[vcd::Value]>,
+        w: &mut vcd::Writer<impl io::Write>,
+    ) -> io::Result<()> {
         assert_eq!(self.width, value.len() as _);
         if self.value.as_ref().map_or(false, |x| *x == value) {
             return Ok(());
@@ -664,12 +671,13 @@ struct StringSignal {
 }
 
 impl StringSignal {
-    fn new(width: u32, reference: &str, w: &mut vcd::Writer<impl io::Write>) -> io::Result<StringSignal> {
+    fn new(
+        width: u32,
+        reference: &str,
+        w: &mut vcd::Writer<impl io::Write>,
+    ) -> io::Result<StringSignal> {
         let id = w.add_var(vcd::VarType::String, width, reference, None)?;
-        Ok(StringSignal {
-            value: None,
-            id,
-        })
+        Ok(StringSignal { value: None, id })
     }
 
     fn update(&mut self, value: String, w: &mut vcd::Writer<impl io::Write>) -> io::Result<()> {
@@ -724,7 +732,7 @@ impl Bits for u16 {
             *value = match (self >> (15 - i)) & 1 {
                 0 => vcd::Value::V0,
                 1 => vcd::Value::V1,
-                _ => unreachable!()
+                _ => unreachable!(),
             };
         }
         ret.into()
@@ -739,7 +747,7 @@ impl Bits for IoBank {
             *value = match (index >> (1 - i)) & 1 {
                 0 => vcd::Value::V0,
                 1 => vcd::Value::V1,
-                _ => unreachable!()
+                _ => unreachable!(),
             };
         }
         ret.into()
@@ -770,7 +778,8 @@ impl Sdram {
                 w.add_module("sdram")?;
 
                 let clk = ScalarSignal::new("clk", &mut w)?;
-                let command = StringSignal::new(4 /* TODO: Verify correct width */, "command", &mut w)?;
+                let command =
+                    StringSignal::new(4 /* TODO: Verify correct width */, "command", &mut w)?;
                 let ldqm = ScalarSignal::new("ldqm", &mut w)?;
                 let udqm = ScalarSignal::new("udqm", &mut w)?;
                 let bank = VectorSignal::new(2, "bank", &mut w)?;
@@ -808,15 +817,23 @@ impl Sdram {
         if let Some(trace) = &mut self.trace {
             trace.clk.update(false, &mut trace.w)?;
 
-            trace.command.update(format!("{:?}", io.command), &mut trace.w)?;
+            trace
+                .command
+                .update(format!("{:?}", io.command), &mut trace.w)?;
             trace.ldqm.update(io.ldqm, &mut trace.w)?;
             trace.udqm.update(io.udqm, &mut trace.w)?;
             trace.bank.update(io.bank.bits(), &mut trace.w)?;
-            trace.a.update(io.a.bits()[16 - (NUM_ROW_ADDR_BITS as usize)..].to_vec().into(), &mut trace.w)?;
-            trace.dq.update(io.dq().map_or_else(
-                || vec![vcd::Value::Z; 16].into(),
-                |dq| dq.bits(),
-            ), &mut trace.w)?;
+            trace.a.update(
+                io.a.bits()[16 - (NUM_ROW_ADDR_BITS as usize)..]
+                    .to_vec()
+                    .into(),
+                &mut trace.w,
+            )?;
+            trace.dq.update(
+                io.dq()
+                    .map_or_else(|| vec![vcd::Value::Z; 16].into(), |dq| dq.bits()),
+                &mut trace.w,
+            )?;
 
             trace.time_stamp += 1;
             trace.w.timestamp(trace.time_stamp)?;
@@ -861,12 +878,18 @@ impl Sdram {
             Command::Read => {
                 self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
 
-                self.state = State::Read { bank: io.bank, num_cycles: 0 };
+                self.state = State::Read {
+                    bank: io.bank,
+                    num_cycles: 0,
+                };
             }
             Command::Write => {
                 self.t_rfc_tester.any_command_except_auto_refresh_and_nop();
 
-                self.state = State::Write { bank: io.bank, num_cycles: 0 };
+                self.state = State::Write {
+                    bank: io.bank,
+                    num_cycles: 0,
+                };
             }
         }
 
@@ -876,7 +899,8 @@ impl Sdram {
             State::Idle => (), // Do nothing
             State::Read { bank, num_cycles } => {
                 // TODO: Technically we only need to test timings for the first read cycle, but doing them each time doesn't hurt
-                let data = self.banks[bank.index()].read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK);
+                let data = self.banks[bank.index()]
+                    .read((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK);
                 next_dq_out = Some(data);
                 *num_cycles += 1;
                 if *num_cycles == BURST_LEN {
@@ -886,7 +910,10 @@ impl Sdram {
             State::Write { bank, num_cycles } => {
                 // TODO: Test(s)
                 let data = io.dq_in.expect("No data provided for write cycle.");
-                self.banks[bank.index()].write((io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK, data);
+                self.banks[bank.index()].write(
+                    (io.a as u32).wrapping_add(*num_cycles) & COL_ADDR_MASK,
+                    data,
+                );
                 *num_cycles += 1;
                 if *num_cycles == BURST_LEN {
                     self.state = State::Idle;
@@ -931,7 +958,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Attempted to activate a row in a bank which already has an active row.")]
+    #[should_panic(
+        expected = "Attempted to activate a row in a bank which already has an active row."
+    )]
     fn one_active_active() {
         let mut sdram = Sdram::new(Some("Sdram__one_active_active")).unwrap();
 
