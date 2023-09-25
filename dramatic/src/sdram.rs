@@ -834,7 +834,7 @@ impl Sdram {
             t_rfc_tester: TRfcTester::new(),
 
             trace: if let Some(prefix) = trace_file_name_prefix {
-                let path = format!("vcd/{}.vcd", prefix);
+                let path = format!("../vcd/{}.vcd", prefix);
                 println!("Writing trace to {}", path);
                 let file = fs::File::create(path)?;
                 let mut w = vcd::Writer::new(io::BufWriter::new(file));
